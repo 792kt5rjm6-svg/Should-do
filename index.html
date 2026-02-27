@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#fafafa" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon-192.png" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <title>日付別スケジュール帳</title>
+
+  <style>
+    :root { --pad: 14px; --radius: 14px; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0;
+      background: #fafafa;
+      color: #111;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(250,250,250,.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid #e9e9e9;
+      padding: calc(var(--pad) + env(safe-area-inset-top)) var(--pad) var(--pad);
+    }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+    input[type="date"] {
+      width: 100%;
+      font-size: 16px;
+      padding: 12px 12px;
+      border: 1px solid #d8d8d8;
+      border-radius: var(--radius);
+      background: #fff;
+      box-sizing: border-box;
+    }
+    .btns { display: flex; gap: 8px; }
+    button {
+      font-size: 14px;
+      padding: 12px 12px;
+      border: 1px solid #d8d8d8;
+      background: #fff;
+      border-radius: var(--radius);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button:active { transform: scale(0.98); }
+    main { padding: var(--pad); max-width: 900px; margin: 0 auto; }
+
+    .hint { font-size: 13px; color: #555; margin: 8px 0 0; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 90px 1fr;
+      gap: 10px;
+      padding: 12px;
+      margin: 10px 0;
+      background: #fff;
+      border: 1px solid #eee;
+      border-radius: var(--radius);
+    }
+    .time { font-weight: 700; padding-top: 6px; font-size: 14px; }
+    .right {
+      display: grid;
+      grid-template-columns: 1fr 56px;
+      gap: 10px;
+      align-items: start;
+    }
+    textarea {
+      width: 100%;
+      min-height: 52px;
+      padding: 12px;
+      font-size: 16px;
+      line-height: 1.4;
+      border: 1px solid #d8d8d8;
+      border-radius: var(--radius);
+      box-sizing: border-box;
+      resize: vertical;
+      outline: none;
+      background: #fff;
+    }
+    textarea:focus { border-color: #888; }
+
+    .checkWrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #d8d8d8;
+      border-radius: var(--radius);
+      height: 52px;
+      background: #fff;
+      user-select: none;
+    }
+    input[type="checkbox"]{
+      width: 24px;
+      height: 24px;
+      accent-color: #111;
+    }
+
+    .done textarea {
+      text-decoration: line-through;
+      color: #888;
+      background: #fcfcfc;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #333;
+      margin-top: 8px;
+      min-height: 16px;
+    }
+
+    @media (max-width: 420px){
+      .row { grid-template-columns: 78px 1fr; }
+      .right { grid-template-columns: 1fr 54px; }
+      .time { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>日付別スケジュール帳</h1>
+  <div class="controls">
+    <input id="datePicker" type="date" />
+    <div class="btns">
+      <button id="clearDayBtn" type="button">この日を消す</button>
+      <button id="exportBtn" type="button">書き出し</button>
+    </div>
+  </div>
+  <div class="hint">入力・チェックは自動保存（端末内）。日付を変えるとその日の内容が表示されます。</div>
+  <div class="status" id="status"></div>
+</header>
+
+<main>
+  <div id="schedule"></div>
+</main>
+
+<script>
+  // PWA: service worker 登録（https or localhostで動く）
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    });
+  }
+
+  // 午前1時〜午後12時（= 1:00 〜 24:00）
+  const START_HOUR = 1;
+  const END_HOUR = 24;
+
+  const STORAGE_PREFIX = "daily_schedule_v2:";
+
+  const datePicker = document.getElementById("datePicker");
+  const scheduleEl = document.getElementById("schedule");
+  const statusEl = document.getElementById("status");
+
+  function pad2(n){ return String(n).padStart(2, "0"); }
+  function hourLabel(h){
+    const from = `${pad2(h)}:00`;
+    const to = (h === END_HOUR) ? "24:00" : `${pad2(h + 1)}:00`;
+    return (h === END_HOUR) ? `${from}` : `${from} - ${to}`;
+  }
+  function todayISO(){
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = pad2(d.getMonth() + 1);
+    const day = pad2(d.getDate());
+    return `${y}-${m}-${day}`;
+  }
+  function keyFor(dateStr){ return STORAGE_PREFIX + dateStr; }
+
+  function loadDay(dateStr){
+    try {
+      const raw = localStorage.getItem(keyFor(dateStr));
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+  function saveDay(dateStr, data){
+    localStorage.setItem(keyFor(dateStr), JSON.stringify(data));
+    statusEl.textContent = `保存しました（${new Date().toLocaleTimeString()}）`;
+    setTimeout(() => { statusEl.textContent = ""; }, 1200);
+  }
+  function ensureShape(dayData){
+    const out = {};
+    for (let h = START_HOUR; h <= END_HOUR; h++){
+      const v = dayData[h];
+      if (typeof v === "object" && v !== null){
+        out[h] = { text: String(v.text ?? ""), done: Boolean(v.done) };
+      } else if (typeof v === "string"){
+        out[h] = { text: v, done: false };
+      } else {
+        out[h] = { text: "", done: false };
+      }
+    }
+    return out;
+  }
+
+  function render(dateStr){
+    const raw = loadDay(dateStr);
+    const data = ensureShape(raw);
+
+    scheduleEl.innerHTML = "";
+    for (let h = START_HOUR; h <= END_HOUR; h++){
+      const row = document.createElement("div");
+      row.className = "row";
+
+      const time = document.createElement("div");
+      time.className = "time";
+      time.textContent = hourLabel(h);
+
+      const right = document.createElement("div");
+      right.className = "right";
+
+      const ta = document.createElement("textarea");
+      ta.placeholder = "予定を入力…";
+      ta.value = data[h].text;
+
+      const checkWrap = document.createElement("label");
+      checkWrap.className = "checkWrap";
+      checkWrap.title = "完了";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = data[h].done;
+      checkWrap.appendChild(cb);
+
+      function applyDoneUI(){
+        if (cb.checked) row.classList.add("done");
+        else row.classList.remove("done");
+      }
+      applyDoneUI();
+
+      ta.addEventListener("input", () => {
+        const latest = ensureShape(loadDay(dateStr));
+        latest[h].text = ta.value;
+        latest[h].done = cb.checked;
+        saveDay(dateStr, latest);
+      });
+
+      cb.addEventListener("change", () => {
+        applyDoneUI();
+        const latest = ensureShape(loadDay(dateStr));
+        latest[h].text = ta.value;
+        latest[h].done = cb.checked;
+        saveDay(dateStr, latest);
+      });
+
+      right.appendChild(ta);
+      right.appendChild(checkWrap);
+      row.appendChild(time);
+      row.appendChild(right);
+      scheduleEl.appendChild(row);
+    }
+  }
+
+  datePicker.value = todayISO();
+  render(datePicker.value);
+
+  datePicker.addEventListener("change", () => render(datePicker.value));
+
+  document.getElementById("clearDayBtn").addEventListener("click", () => {
+    const d = datePicker.value;
+    if (!d) return;
+    if (!confirm(`「${d}」の内容を消しますか？`)) return;
+    localStorage.removeItem(keyFor(d));
+    render(d);
+  });
+
+  document.getElementById("exportBtn").addEventListener("click", () => {
+    const d = datePicker.value;
+    const data = ensureShape(loadDay(d));
+    let out = `【スケジュール】${d}\n\n`;
+    for (let h = START_HOUR; h <= END_HOUR; h++){
+      const label = hourLabel(h);
+      const t = (data[h].text || "").trim();
+      const mark = data[h].done ? "✅" : "⬜️";
+      out += `${mark} ${label}\n${t ? t : "（空）"}\n\n`;
+    }
+    if (navigator.clipboard?.writeText){
+      navigator.clipboard.writeText(out).then(() => alert("コピーしました！")).catch(() => alert(out));
+    } else {
+      alert(out);
+    }
+  });
+</script>
+</body>
+</html>
